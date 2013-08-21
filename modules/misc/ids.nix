@@ -100,6 +100,7 @@
       minidlna = 91;
       elasticsearch = 92;
       tcpcryptd = 93; # tcpcryptd uses a hard-coded uid. We patch it in Nixpkgs to match this choice.
+      tss = 94;
 
       # When adding a uid, make sure it doesn't match an existing gid.
 
@@ -186,6 +187,7 @@
       quassel = 89;
       amule = 90;
       minidlna = 91;
+      tss = 92;
 
       # When adding a gid, make sure it doesn't match an existing uid.
 
