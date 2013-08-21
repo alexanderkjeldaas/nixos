@@ -29,7 +29,7 @@ with pkgs.lib;
 
       description = "Hardware RNG Entropy Gatherer Daemon";
 
-      serviceConfig.ExecStart = "${pkgs.rng_tools}/sbin/rngd -f -v";
+      serviceConfig.ExecStart = "${pkgs.rng_tools}/sbin/rngd -f -v --no-tpm=1";
 
       restartTriggers = [ pkgs.rng_tools ];
     };
