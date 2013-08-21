@@ -11,16 +11,20 @@ let
     port = 30003
     num_threads = 10
     system_ps_file = ${cfg.stateDir}/system.data
-    #firmware_log_file = /proc/tpm/firmware_events
-    #kernel_log_file = /proc/tcg/measurement_events
-    firmware_pcrs = 0,1,2,3,4,5,6,7
-    kernel_pcrs = 10,11
+    # This is the log of each individual measurement done by the system.
+    # By re-calculating the PCR registers based on this information, even
+    # finer details about the measured environment can be inferred than
+    # what is available directly from the PCR registers.
+    firmware_log_file = /sys/kernel/security/tpm0/binary_bios_measurements
+    kernel_log_file = /sys/kernel/security/ima/binary_runtime_measurements
+    #firmware_pcrs = 0,1,2,3,4,5,6,7
+    #kernel_pcrs = 10,11
     platform_cred = ${cfg.platformCred}
     conformance_cred = ${cfg.conformanceCred}
     endorsement_cred = ${cfg.endorsementCred}
     #remote_ops = create_key,random
-    host_platform_class = server_12
-    all_platform_classes = pc_11,pc_12,mobile_12
+    #host_platform_class = server_12
+    #all_platform_classes = pc_11,pc_12,mobile_12
   '';
 
 in
