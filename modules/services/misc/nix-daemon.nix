@@ -39,6 +39,7 @@ let
         # /etc/nixos/configuration.nix.  Do not edit it!
         build-users-group = nixbld
         build-max-jobs = ${toString (cfg.maxJobs)}
+        build-cores = ${toString (cfg.cores)}
         build-use-chroot = ${if cfg.useChroot then "true" else "false"}
         build-chroot-dirs = ${toString cfg.chrootDirs} $(echo $extraPaths)
         binary-caches = ${toString cfg.binaryCaches}
@@ -74,6 +75,17 @@ in
           set it to the number of CPUs in your system (e.g., 2 on an Athlon
           64 X2).
         ";
+      };
+      
+      cores = mkOption {
+      	default = 1;
+      	example = 4;
+      	description = "
+      	  This option defines the -jX parameter to make, that is the
+      	  number of parallel make targets that a single build will perform.
+      	  This can be overridden on the command line by setting
+      	  NIX_BUILD_CORES.
+      	";
       };
 
       useChroot = mkOption {
