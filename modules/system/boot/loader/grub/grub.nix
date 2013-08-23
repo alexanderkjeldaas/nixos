@@ -1,5 +1,4 @@
 { config, pkgs, ... }:
-
 with pkgs.lib;
 
 let
@@ -26,10 +25,17 @@ let
         version extraConfig extraPerEntryConfig extraEntries
         extraEntriesBeforeNixOS extraPrepareConfig configurationLimit copyKernels timeout
         default devices;
+      tbootPath = (makeSearchPath "/" [ pkgs.tboot ]);
+      trustedBootEnable = cfg.trustedBoot.enable;
+      trustedBootAutoLcp = cfg.trustedBoot.autoLcp;
+      trustedBootTbootParams = cfg.trustedBoot.tbootParams;
+      trustedBootLcpPublicKey = cfg.trustedBoot.publicKey;
+      trustedBootLcpPrivateKey = cfg.trustedBoot.privateKey;
+
       path = (makeSearchPath "bin" [
-        pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.findutils pkgs.diffutils
+        pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.findutils pkgs.diffutils pkgs.openssl
       ]) + ":" + (makeSearchPath "sbin" [
-        pkgs.mdadm
+        pkgs.mdadm pkgs.tboot
       ]);
     });
 
@@ -96,6 +102,106 @@ in
           GRUB entry name instead of default.
         '';
       };
+      
+      trustedBoot = {
+        enable = mkOption {
+      	  default = false;
+      	  description = ''
+      	    Whether GRUB should be setup using tboot and use trusted boot.
+            See also "Intel® Trusted Execution Technology (Intel® TXT)
+            Software Development Guide. Measured Launched Environment Developer’s Guide"
+            http://www.intel.com/content/dam/www/public/us/en/documents/guides/intel-txt-software-development-guide.pdf
+      	  '';
+        };
+
+        autoLcp = mkOption {
+          default = true;
+          description = ''
+            Whether a Launch Control Policy should be automatically derived for the boot.
+          '';
+        };
+
+        tbootParams = mkOption {
+          default = "logging=serial,vga,memory";
+          description = ''
+            Parameters given to tboot, the Intel TXT trusted boot.
+          '';
+        };
+
+        lcpIncludePlatformPCRs = mkOption {
+          default = false;
+          description = ''
+            Whether to include the platform environment PCONF in the LCP.
+            The platform environment include PCR0..PCR7 of the TPM and
+            such things as the BIOS, option ROMs, MBR, etc.  These can
+            easily change when adding or removing hardware, or when 
+            changing BIOS settings.  The dynamic root of trust measurement
+            (DRTM) should mostly be isolated from this when using Intel TXT
+            because the CPU enters an isolated state, but including these
+            can give extra protection.
+
+            WARNING: SEALing data to the PCONF environment can render the
+            data unavailable if the platform environment changes.
+          '';
+        };
+
+        privateKey = mkOption {
+          default = "/etc/tboot/privkey.pem";
+          description = ''
+            Optional private key used to sign LCP.  You can create this key with
+            the command:  "openssl genrsa -out privkey.pem 2048".
+
+            The purpose of signed policies is to provide a mechanism that allows policy authors to
+            update the list of permissible environments without having to update the TPM NV
+            (note that if revocation is used that the TPM NV must be updated to increment the
+            revocation counter). This allows updates to be simple file pushes rather than physical
+            or remote platform touches. It also facilitates sealing against the policy, as sealed
+            data does not have to be migrated when the policy is updated. The use of this mechanism
+            places certain responsibilities on policy authors:
+
+            The private signature key needs to be kept secure and under the control of the
+            key owner at all times.
+
+            The private signature key needs to be strong enough for the full lifetime of the
+            policy [for the Platform Supplier we have estimated up to seven years]
+          '';
+        };
+
+        publicKey = mkOption {
+          default = "/etc/tboot/pubkey.pem";
+          description = ''
+            Optional public key used to verify a signed LCP.  If privateKey exists, the public key
+            will be derived using the command: "openssl rsa -pubout -in privateKey.pem -out publicKey.pem".
+          '';
+        };
+
+        sinit = mkOption {
+          description = ''
+            The SINIT ACM (authenticated code module) for your CPU.  The program nixos-scan-hardware
+            should detect and give the correct setting.
+          '';
+        };
+
+        racm = mkOption {
+          description = ''
+            The Revocation ACM (authenticated code module) for your CPU.  This SINIT updates the
+            revocation list for SINIT versions that have security flaws.  This is updated in the CPU.
+
+            The separate setting enableRACM must be set to enable this.
+
+            WARNING: The CPU updates that RACM does are irreversible.
+          '';
+        };
+
+        enableRACM = mkOption {
+          default = false;
+          description = ''
+            Whether the RACM module should be run on boot.  WARNING: The CPU updates that RACM does are 
+            irreversible.'';
+        };
+     };
+
+      
 
       extraPrepareConfig = mkOption {
         default = "";

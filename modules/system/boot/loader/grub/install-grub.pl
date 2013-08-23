@@ -5,14 +5,24 @@ use File::Basename;
 use File::Path;
 use File::stat;
 use File::Copy;
+#use File::Slurp;
+use File::Temp qw/ tempfile /;
 use POSIX;
 use Cwd;
+
+File::Temp->safe_level( File::Temp::HIGH );
 
 my $defaultConfig = $ARGV[1] or die;
 
 my $dom = XML::LibXML->load_xml(location => $ARGV[0]);
 
 sub get { my ($name) = @_; return $dom->findvalue("/expr/attrs/attr[\@name = '$name']/*/\@value"); }
+
+sub readBinFile {
+    my ($fn) = @_; local $/ = undef;
+    open FILE, "<$fn" or return undef; my $s = <FILE>; close FILE;
+    return $s;
+}
 
 sub readFile {
     my ($fn) = @_; local $/ = undef;
@@ -27,6 +37,96 @@ sub writeFile {
     close FILE or die;
 }
 
+sub generateLcp {
+    my ($tboot, $tbootCmd, $public, $private) = @_;
+    # Generate public key from private key if needed.
+    my (undef, $fn) = tempfile( SUFFIX => '.pem', UNLINK => 1);
+    -e $private || die "Private key $private does not exist! Create one the command openssl genrsa -out $private 2048";
+    if ((! -e $public) && $private) {
+	`openssl rsa -pubout -in $private -out $fn`;
+        $public = $fn;
+    }
+
+    # Create LCP policy
+    # Create MLE element
+    print STDERR "Generaring MLE hash for tboot... ";
+    my (undef, $mle_hash) = tempfile(UNLINK => 1);
+    `lcp_mlehash -c "$tbootCmd" /boot$tboot >$mle_hash`;
+    print STDERR readFile($mle_hash)."\n";
+    my (undef, $mle_elt) = tempfile(UNLINK => 1);
+    print STDERR "Generating MLE element for tboot...\n";
+    `lcp_crtpolelt --create --type mle --ctrl 0x00 --minver 67 --out $mle_elt $mle_hash`;
+
+    # SBIOS element
+    my (undef, $list_unsig) = tempfile(UNLINK => 1);
+    my (undef, $list_sig) = tempfile(UNLINK => 1);
+    print STDERR "Generating policy lists from MLE element for tboot...\n";
+    `lcp_crtpollist --create --out $list_unsig $mle_elt`;
+    `lcp_crtpollist --create --out $list_sig $mle_elt`;
+
+    # The resulting policy and data
+    my (undef, $list_pol) = tempfile(UNLINK => 1);
+    my (undef, $list_data) = tempfile(UNLINK => 1);
+
+    # Sign the list using openssl
+    if ($private) {
+        # TODO: Verify how $list is handled here.
+        # Add our public key to the list
+        print STDERR "Adding public key to policy list for tboot...\n";
+	`lcp_crtpollist --sign --pub $public --nosig --out $list_sig`;
+	# TODO: Add scheme where we can import this signature from somewhere else.
+        # Create signature for the list
+	my ($_,$fn) = tempfile();
+        print STDERR "Signing policy list for tboot...\n";
+	`openssl dgst -sha1 -sign $private -out $fn $list_sig`;
+	# Add the signature to the list (so we have the public key and the signature as additional elements)
+        print STDERR "Adding signature to policy list for tboot...\n";
+        `lcp_crtpollist --addsig --sig $fn --out $list_sig`;
+        print STDERR "Creating final Launch Control Policy (LCP) for tboot...\n";
+        `lcp_crtpol2 --create --type list --pol $list_pol --data $list_data $list_unsig $list_sig`;
+    } else {
+        print STDERR "Creating final Launch Control Policy (LCP) for tboot...\n";
+        `lcp_crtpol2 --create --type list --pol $list_pol --data $list_data $list_unsig`;
+    }
+    return (readBinFile($list_pol), readBinFile($list_data));
+}
+
+# Instruct tboot on which kernel/initrd to boot by creating a
+# verified launch policy
+sub generateTbootPolicy {
+    my ($kernel, $kernelCmd, $initrd, $initrdCmd) = @_;
+    #my (undef, $vl_policy) = tempfile(UNLINK => 1);
+    #my (undef, $fn) = tempfile( SUFFIX => '.pem', UNLINK => 1);
+    my (undef, $vl_policy) = tempfile( OPEN => 0 );
+    print STDERR "Creating tboot verified launch policy...\n";
+    `tb_polgen --create --type nonfatal $vl_policy`;
+    print STDERR "Adding verified launch element for kernel...\n";
+    `tb_polgen --add --num 0 --pcr 18 --hash image --cmdline "$kernelCmd" --image /boot$kernel $vl_policy`;
+    print STDERR "Adding verified launch element for initrd...\n";
+    `tb_polgen --add --num 1 --pcr 19 --hash image --cmdline "$initrdCmd" --image /boot$initrd $vl_policy`;
+    return readBinFile($vl_policy);
+}
+
+sub writeTpmNvram {
+    my ($lcp_pol, $vl_pol) = @_;
+    # Define LCP and Verified Launch policy indices
+    # The nvram index 0x20000001 is hard-coded in tboot
+    `tpmnv_defindex -i 0x20000001 -s 512 -pv 0x02 || true`;
+    # The owner index is sometimes pre-defined on delivery of the system
+    # TODO: Add tpm owner password
+    `tpmnv_defindex -i owner -s 0x36 || true`;
+    my (undef, $lcp_policy) = tempfile(UNLINK => 1);
+    my (undef, $vl_policy) = tempfile(UNLINK => 1);
+    writeFile($lcp_policy, $lcp_pol);
+    writeFile($vl_policy, $vl_pol);
+    # TODO: Add TPM password
+    `lcp_writepol -i owner -f $lcp_policy`;
+    `lcp_writepol -i 0x20000001 -f $vl_policy`;
+}
+
+# (add module /list.data to grub)
+   
+
 my $grub = get("grub");
 my $grubVersion = int(get("version"));
 my $extraConfig = get("extraConfig");
@@ -39,6 +139,12 @@ my $configurationLimit = int(get("configurationLimit"));
 my $copyKernels = get("copyKernels") eq "true";
 my $timeout = int(get("timeout"));
 my $defaultEntry = int(get("default"));
+my $trustedBootEnable = get("trustedBootEnable") eq "true";
+my $trustedBootAutoLcp = get("trustedBootAutoLcp") eq "true";
+my $trustedBootTbootParams = get("trustedBootTbootParams");
+my $trustedBootLcpPublicKey = get("trustedBootLcpPublicKey");
+my $trustedBootLcpPrivateKey = get("trustedBootLcpPrivateKey");
+my $tbootPath = get("tbootPath");
 $ENV{'PATH'} = get("path");
 
 die "unsupported GRUB version\n" if $grubVersion != 1 && $grubVersion != 2;
@@ -151,12 +257,13 @@ sub copyToKernelsDir {
 }
 
 sub addEntry {
-    my ($name, $path) = @_;
+    my ($name, $path, $isDefault) = @_;
     return unless -e "$path/kernel" && -e "$path/initrd";
 
     my $kernel = copyToKernelsDir(Cwd::abs_path("$path/kernel"));
     my $initrd = copyToKernelsDir(Cwd::abs_path("$path/initrd"));
     my $xen = -e "$path/xen.gz" ? copyToKernelsDir(Cwd::abs_path("$path/xen.gz")) : undef;
+    my $tboot = $trustedBootEnable ? copyToKernelsDir($tbootPath."/boot/tboot.gz") : undef;
 
     # FIXME: $confName
 
@@ -165,19 +272,50 @@ sub addEntry {
         "init=" . Cwd::abs_path("$path/init") . " " .
         readFile("$path/kernel-params");
     my $xenParams = $xen && -e "$path/xen-params" ? readFile("$path/xen-params") : "";
+    
+    # Configure tboot and/or xen in a multiboot setup.
+    my $multiboot = undef;
+    $multiboot = (($grubVersion == 1) ? "  kernel" : "  multiboot") if ($xen || $trustedBootEnable);
+    my $extra_line = undef;
+    if ($trustedBootEnable) {
+        # Tboot must be repeated on cmdline because grub doesn't properly pass argv[0]
+        $multiboot .= " $tboot $tboot $trustedBootTbootParams\n";
+        $multiboot .= "  module $xen $xenParams\n" if $xen;
 
+	if ($isDefault && $trustedBootAutoLcp) {
+            print STDERR "Generating Launch Control Policy and Verified Launch Policy\n";
+	    my ($list_pol, $list_data) = generateLcp($tboot,
+                                                     $trustedBootTbootParams,
+                                                     $trustedBootLcpPublicKey,
+ 	                                             $trustedBootLcpPrivateKey);
+	    my $vl_policy = generateTbootPolicy($kernel, $kernelParams, $initrd, "");
+            print STDERR "Writing LCP and VLP to NVRAM";
+            writeTpmNvram($list_pol, $vl_policy);
+            # Create tmp file on /boot with module data.
+	    my (undef, $f) = tempfile( SUFFIX => '.lcp-data', UNLINK => 1);
+            writeFile($f, $list_data);
+	    my $list_data_fn = copyToKernelsDir($f);
+            print STDERR "Copying $f to $list_data_fn\n";
+            $extra_line = "  module $list_data_fn\n";
+        }
+    } elsif ($xen) {
+        $multiboot .= " $xen $xenParams\n";
+    }
+    
     if ($grubVersion == 1) {
         $conf .= "title $name\n";
         $conf .= "  $extraPerEntryConfig\n" if $extraPerEntryConfig;
-        $conf .= "  kernel $xen $xenParams\n" if $xen;
-        $conf .= "  " . ($xen ? "module" : "kernel") . " $kernel $kernelParams\n";
-        $conf .= "  " . ($xen ? "module" : "initrd") . " $initrd\n\n";
+        $conf .= $multiboot if $multiboot;
+        $conf .= "  " . ($multiboot ? "module" : "kernel") . " $kernel $kernelParams\n";
+        $conf .= "  " . ($multiboot ? "module" : "initrd") . " $initrd\n\n";
+        $conf .= $extra_line if $extra_line;
     } else {
         $conf .= "menuentry \"$name\" {\n";
         $conf .= "  $extraPerEntryConfig\n" if $extraPerEntryConfig;
-        $conf .= "  multiboot $xen $xenParams\n" if $xen;
-        $conf .= "  " . ($xen ? "module" : "linux") . " $kernel $kernelParams\n";
-        $conf .= "  " . ($xen ? "module" : "initrd") . " $initrd\n";
+        $conf .= $multiboot if $multiboot;
+        $conf .= "  " . ($multiboot ? "module" : "linux") . " $kernel $kernelParams\n";
+        $conf .= "  " . ($multiboot ? "module" : "initrd") . " $initrd\n";
+        $conf .= $extra_line if $extra_line;
         $conf .= "}\n\n";
     }
 }
@@ -186,7 +324,7 @@ sub addEntry {
 # Add default entries.
 $conf .= "$extraEntries\n" if $extraEntriesBeforeNixOS;
 
-addEntry("NixOS - Default", $defaultConfig);
+addEntry("NixOS - Default", $defaultConfig, 1);
 
 $conf .= "$extraEntries\n" unless $extraEntriesBeforeNixOS;
 
