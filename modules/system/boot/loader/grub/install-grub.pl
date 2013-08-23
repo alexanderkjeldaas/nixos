@@ -111,17 +111,41 @@ sub writeTpmNvram {
     my ($lcp_pol, $vl_pol) = @_;
     # Define LCP and Verified Launch policy indices
     # The nvram index 0x20000001 is hard-coded in tboot
-    `tpmnv_defindex -i 0x20000001 -s 512 -pv 0x02 || true`;
+    `tpm_nvinfo -n | grep -q 0x20000001`;
+    if ($?) {
+	print STDERR "Creating tboot policy index in the TPM NVRAM\n";
+        `tpm_nvdefine -i 0x20000001 -s 512 -p 'OWNERWRITE' -z -y`;
+        ($? == 0) || die "Could not create tboot policy index in the TPM NVRAM";
+    } else {
+	print STDERR "Tboot policy index exists in the TPM NVRAM\n";
+    }
     # The owner index is sometimes pre-defined on delivery of the system
     # TODO: Add tpm owner password
-    `tpmnv_defindex -i owner -s 0x36 || true`;
+    `tpm_nvinfo -n | grep -q 0x40000001`;
+    if ($?) {
+	print STDERR "Creating LCP index in the TPM NVRAM\n";
+	`tpm_nvdefine -i 0x40000001 -s 54 -p 'OWNERWRITE' -z -y`;
+        ($? == 0) || die "Could not create LCP index in the TPM NVRAM";
+    } else {
+	print STDERR "LCP index exists in the TPM NVRAM\n";
+    }
     my (undef, $lcp_policy) = tempfile(UNLINK => 1);
     my (undef, $vl_policy) = tempfile(UNLINK => 1);
     writeFile($lcp_policy, $lcp_pol);
     writeFile($vl_policy, $vl_pol);
     # TODO: Add TPM password
-    `lcp_writepol -i owner -f $lcp_policy`;
-    `lcp_writepol -i 0x20000001 -f $vl_policy`;
+    my $display = `lcp_crtpol2 --show $lcp_policy`;
+    print STDERR "Writing policy: $display\n";
+    #`lcp_writepol -i owner -f $lcp_policy`;
+    `tpm_nvwrite -z -i 0x40000001 -f $lcp_policy`;
+    ($? == 0) || die "Failed to write LCP index in the TPM NVRAM";
+    print STDERR "Success\n";
+    $display = `lcp_crtpol2 --show $vl_policy`;
+    print STDERR "Writing policy: $display\n";
+    #`lcp_writepol -i 0x20000001 -f $vl_policy`;
+    `tpm_nvwrite -z -i 0x20000001 -f $vl_policy`;
+    ($? == 0) || die "Failed to write tboot index in the TPM NVRAM";
+    print STDERR "Success\n";
 }
 
 # (add module /list.data to grub)
@@ -289,7 +313,7 @@ sub addEntry {
                                                      $trustedBootLcpPublicKey,
  	                                             $trustedBootLcpPrivateKey);
 	    my $vl_policy = generateTbootPolicy($kernel, $kernelParams, $initrd, "");
-            print STDERR "Writing LCP and VLP to NVRAM";
+            print STDERR "Writing LCP and VLP to NVRAM\n";
             writeTpmNvram($list_pol, $vl_policy);
             # Create tmp file on /boot with module data.
 	    my (undef, $f) = tempfile( SUFFIX => '.lcp-data', UNLINK => 1);

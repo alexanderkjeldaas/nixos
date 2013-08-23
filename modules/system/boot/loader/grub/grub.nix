@@ -35,7 +35,7 @@ let
       path = (makeSearchPath "bin" [
         pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.findutils pkgs.diffutils pkgs.openssl
       ]) + ":" + (makeSearchPath "sbin" [
-        pkgs.mdadm pkgs.tboot
+        pkgs.mdadm pkgs.tboot pkgs.tpm-tools
       ]);
     });
 
