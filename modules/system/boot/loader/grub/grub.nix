@@ -122,7 +122,7 @@ in
         };
 
         tbootParams = mkOption {
-          default = "logging=serial,vga,memory";
+          default = "logging=serial,vga,memory vga_delay=10";
           description = ''
             Parameters given to tboot, the Intel TXT trusted boot.
           '';

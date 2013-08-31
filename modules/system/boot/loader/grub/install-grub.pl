@@ -41,7 +41,7 @@ sub generateLcp {
     my ($tboot, $tbootCmd, $public, $private) = @_;
     # Generate public key from private key if needed.
     my (undef, $fn) = tempfile( SUFFIX => '.pem', UNLINK => 1);
-    -e $private || die "Private key $private does not exist! Create one the command openssl genrsa -out $private 2048";
+    -e $private || print STDERR "Private key $private does not exist! Create one the command openssl genrsa -out $private 2048";
     if ((! -e $public) && $private) {
 	`openssl rsa -pubout -in $private -out $fn`;
         $public = $fn;
@@ -55,7 +55,8 @@ sub generateLcp {
     print STDERR readFile($mle_hash)."\n";
     my (undef, $mle_elt) = tempfile(UNLINK => 1);
     print STDERR "Generating MLE element for tboot...\n";
-    `lcp_crtpolelt --create --type mle --ctrl 0x00 --minver 67 --out $mle_elt $mle_hash`;
+    #`lcp_crtpolelt --create --type mle --ctrl 0x00 --minver 67 --out $mle_elt $mle_hash`;
+    `lcp_crtpolelt --create --type mle --ctrl 0x00 --out $mle_elt $mle_hash`;
 
     # SBIOS element
     my (undef, $list_unsig) = tempfile(UNLINK => 1);
@@ -69,7 +70,7 @@ sub generateLcp {
     my (undef, $list_data) = tempfile(UNLINK => 1);
 
     # Sign the list using openssl
-    if ($private) {
+    if (-e $private) {
         # TODO: Verify how $list is handled here.
         # Add our public key to the list
         print STDERR "Adding public key to policy list for tboot...\n";
@@ -86,9 +87,10 @@ sub generateLcp {
         `lcp_crtpol2 --create --type list --pol $list_pol --data $list_data $list_unsig $list_sig`;
     } else {
         print STDERR "Creating final Launch Control Policy (LCP) for tboot...\n";
-        `lcp_crtpol2 --create --type list --pol $list_pol --data $list_data $list_unsig`;
+        #`lcp_crtpol2 --create --type list --pol $list_pol --data $list_data $list_unsig`;
+        `lcp_crtpol2 --create --type any --pol $list_pol`;
     }
-    return (readBinFile($list_pol), readBinFile($list_data));
+    return (readBinFile($list_pol), (-e $list_data) ? readBinFile($list_data) : '');
 }
 
 # Instruct tboot on which kernel/initrd to boot by creating a
@@ -108,42 +110,69 @@ sub generateTbootPolicy {
 }
 
 sub writeTpmNvram {
-    my ($lcp_pol, $vl_pol) = @_;
+    my ($lcp_pol, $lcp_dat, $vl_pol) = @_;
+    my $tpm_pw = "root";
     # Define LCP and Verified Launch policy indices
     # The nvram index 0x20000001 is hard-coded in tboot
-    `tpm_nvinfo -n | grep -q 0x20000001`;
-    if ($?) {
-	print STDERR "Creating tboot policy index in the TPM NVRAM\n";
-        `tpm_nvdefine -i 0x20000001 -s 512 -p 'OWNERWRITE' -z -y`;
+    #`tpm_nvinfo -n | grep -q 0x20000001`;
+    `tpmnv_relindex -i 0x20000001 -p $tpm_pw`;
+    print STDERR "Tboot policy index didn't exist in TPM NVRAM\n" if $?;
+    print STDERR "Creating tboot policy index in the TPM NVRAM\n";
+        #`tpm_nvdefine -i 0x20000001 -s 512 -p 'OWNERWRITE' -z -y`;
+        `tpmnv_defindex -i 0x20000001 -s 512 -pv 0x02 -p $tpm_pw`;
         ($? == 0) || die "Could not create tboot policy index in the TPM NVRAM";
-    } else {
-	print STDERR "Tboot policy index exists in the TPM NVRAM\n";
-    }
+#    } else {
+#	print STDERR "Tboot policy index exists in the TPM NVRAM\n";
+#    }
+    # Ensure that we have the error index 0x20000002 defined
+    #`tpm_nvinfo -n | grep -q 0x20000002`;
+    `tpmnv_relindex -i 0x20000002 -p $tpm_pw`;
+    print STDERR "SINIT error index didn't exist in TPM NVRAM\n" if $?;
+#    if ($?) {
+        print STDERR "Creating SINIT error index in the TPM NVRAM\n";
+        `tpmnv_defindex -i 0x20000002 -s 8 -pv 0 -rl 0x07 -wl 0x07 -p $tpm_pw`;
+        #`tpm_nvdefine -i 0x20000002 -s 8 -p 'OWNERWRITE' -z -y`;
+        ($? == 0) || die "Could not create SINIT error index in the TPM NVRAM\n";
+#    } else {
+#        print STDERR "SINIT error index exists in the TPM NVRAM\n";
+#    }
     # The owner index is sometimes pre-defined on delivery of the system
     # TODO: Add tpm owner password
-    `tpm_nvinfo -n | grep -q 0x40000001`;
-    if ($?) {
+    #`tpm_nvinfo -n | grep -q 0x40000001`;
+    `tpmnv_relindex -i owner -p $tpm_pw`;
+    print STDERR "LCP index didn't exist in TPM NVRAM\n" if $?;
+#    if ($?) {
 	print STDERR "Creating LCP index in the TPM NVRAM\n";
-	`tpm_nvdefine -i 0x40000001 -s 54 -p 'OWNERWRITE' -z -y`;
-        ($? == 0) || die "Could not create LCP index in the TPM NVRAM";
-    } else {
-	print STDERR "LCP index exists in the TPM NVRAM\n";
-    }
+        #`tpmnv_defindex -i owner -p $tpm_pw`;
+        #($? == 0) || die "Could not create LCP index in the TPM NVRAM";
+        `tpmnv_defindex -i owner -p $tpm_pw`;
+	#`tpm_nvdefine -i 0x40000001 -s 54 -p 'OWNERWRITE' -z -y`;
+        ($? == 0) || die "Could not modify LCP index in the TPM NVRAM";
+#    } else {
+#	print STDERR "LCP index exists in the TPM NVRAM\n";
+#    }
     my (undef, $lcp_policy) = tempfile(UNLINK => 1);
+    my (undef, $lcp_data) = tempfile(UNLINK => 1);
     my (undef, $vl_policy) = tempfile(UNLINK => 1);
     writeFile($lcp_policy, $lcp_pol);
+    writeFile($lcp_data, $lcp_dat);
     writeFile($vl_policy, $vl_pol);
     # TODO: Add TPM password
-    my $display = `lcp_crtpol2 --show $lcp_policy`;
+    my $display;
+    if (length $lcp_dat) {
+        $display = `lcp_crtpol2 --show $lcp_policy $lcp_data`;
+    } else {
+        $display = `lcp_crtpol2 --show $lcp_policy`;
+    }
     print STDERR "Writing policy: $display\n";
-    #`lcp_writepol -i owner -f $lcp_policy`;
-    `tpm_nvwrite -z -i 0x40000001 -f $lcp_policy`;
+    `lcp_writepol -i owner -f $lcp_policy -p $tpm_pw`;
+    #`tpm_nvwrite -z -i 0x40000001 -f $lcp_policy`;
     ($? == 0) || die "Failed to write LCP index in the TPM NVRAM";
     print STDERR "Success\n";
-    $display = `lcp_crtpol2 --show $vl_policy`;
+    $display = `tb_polgen --show $vl_policy`;
     print STDERR "Writing policy: $display\n";
-    #`lcp_writepol -i 0x20000001 -f $vl_policy`;
-    `tpm_nvwrite -z -i 0x20000001 -f $vl_policy`;
+    `lcp_writepol -i 0x20000001 -f $vl_policy -p $tpm_pw`;
+    #`tpm_nvwrite -z -i 0x20000001 -f $vl_policy -p $tpm_pw`;
     ($? == 0) || die "Failed to write tboot index in the TPM NVRAM";
     print STDERR "Success\n";
 }
@@ -294,6 +323,7 @@ sub addEntry {
     my $kernelParams =
         "systemConfig=" . Cwd::abs_path($path) . " " .
         "init=" . Cwd::abs_path("$path/init") . " " .
+        "intel_iommu=on " .
         readFile("$path/kernel-params");
     my $xenParams = $xen && -e "$path/xen-params" ? readFile("$path/xen-params") : "";
     
@@ -314,13 +344,13 @@ sub addEntry {
  	                                             $trustedBootLcpPrivateKey);
 	    my $vl_policy = generateTbootPolicy($kernel, $kernelParams, $initrd, "");
             print STDERR "Writing LCP and VLP to NVRAM\n";
-            writeTpmNvram($list_pol, $vl_policy);
-            # Create tmp file on /boot with module data.
-	    my (undef, $f) = tempfile( SUFFIX => '.lcp-data', UNLINK => 1);
-            writeFile($f, $list_data);
-	    my $list_data_fn = copyToKernelsDir($f);
-            print STDERR "Copying $f to $list_data_fn\n";
-            $extra_line = "  module $list_data_fn\n";
+            writeTpmNvram($list_pol, $list_data, $vl_policy);
+            if (length $list_data) {
+                my $dst = "/kernels/lcp-data";
+                writeFile("/boot$dst", $list_data);
+                $copied{"/boot$dst"} = 1;
+                $extra_line = "  module $dst\n";
+            }
         }
     } elsif ($xen) {
         $multiboot .= " $xen $xenParams\n";
