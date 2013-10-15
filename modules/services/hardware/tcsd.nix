@@ -107,7 +107,7 @@ in
 
     systemd.services.tcsd = {
       description = "TCSD";
-      after = [ "basic.target" ];
+      after = [ "systemd-udev-settle.service" ];
       wantedBy = [ "multi-user.target" ];
       path = [ pkgs.trousers ];
       preStart =
@@ -115,7 +115,7 @@ in
         mkdir -m 0700 -p ${cfg.stateDir}
         chown -R ${cfg.user}:${cfg.group} ${cfg.stateDir}
         '';
-      serviceConfig.ExecStart = "${pkgs.trousers}/sbin/tcsd -c ${tcsdConf}";
+      serviceConfig.ExecStart = "${pkgs.trousers}/sbin/tcsd -f -c ${tcsdConf}";
     };
 
     users.extraUsers = optionalAttrs (cfg.user == "tss") (singleton
